@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Paneli — Müzisyenler Kulübü</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin-body">
+<div class="admin-wrap">
+<header class="admin-head">
+<div><h1>🛡️ Admin Paneli</h1><p>Müzisyenler Kulübü yönetim merkezi</p></div>
+<div class="admin-actions"><a href="/">← Siteye Dön</a><a href="/logout">Çıkış</a></div>
+</header>
+<div class="stats" id="stats"></div>
+<section class="admin-card">
+<div class="admin-title"><h2>👥 Kullanıcılar</h2><input id="userSearch" placeholder="Kullanıcı ara..." oninput="renderUsers()"></div>
+<div id="users"></div>
+</section>
+<section class="admin-card">
+<div class="admin-title"><h2>📣 İlanlar</h2></div>
+<div id="listings"></div>
+</section>
+</div>
+<script>
+let users=[], listings=[];
+const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+async function load(){
+ users=await (await fetch("/api/admin/users")).json();
+ listings=await (await fetch("/api/admin/listings")).json();
+ renderUsers(); renderListings();
+ document.getElementById("stats").innerHTML=`<div><b>${users.length}</b><span>Kullanıcı</span></div><div><b>${users.filter(x=>x.role==="admin").length}</b><span>Admin</span></div><div><b>${listings.length}</b><span>İlan</span></div>`;
+}
+function renderUsers(){
+ const q=(document.getElementById("userSearch").value||"").toLowerCase();
+ const rows=users.filter(x=>(x.username+" "+x.email+" "+x.instrument+" "+x.city).toLowerCase().includes(q));
+ document.getElementById("users").innerHTML=rows.map(u=>`
+ <div class="admin-row">
+ <div class="avatar sm">${esc((u.username||"?")[0].toUpperCase())}</div>
+ <div class="admin-grow"><b>${esc(u.username)}</b><small>${esc(u.email)} · ${esc(u.instrument||"")} · ${esc(u.city||"")}</small></div>
+ <select onchange="role(${u.id},this.value)" ${u.username===`{{ user["username"] }}`?"disabled":""}>
+ <option value="user" ${u.role==="user"?"selected":""}>Üye</option><option value="admin" ${u.role==="admin"?"selected":""}>Admin</option></select>
+ ${u.username===`{{ user["username"] }}`?"<span class='you'>Sen</span>":`<button onclick="delUser(${u.id})">Sil</button>`}
+ </div>`).join("")||"<p class='muted'>Kullanıcı bulunamadı.</p>";
+}
+async function role(id,r){const fd=new FormData();fd.append("role",r);const d=await (await fetch("/api/admin/users/"+id+"/role",{method:"POST",body:fd})).json();if(!d.ok)alert(d.error||"İşlem başarısız");load();}
+async function delUser(id){if(!confirm("Bu kullanıcı ve ilan/mesaj kayıtları silinsin mi?"))return;await fetch("/api/admin/users/"+id,{method:"DELETE"});load();}
+function renderListings(){document.getElementById("listings").innerHTML=listings.map(l=>`
+<div class="admin-row"><div class="admin-grow"><b>${esc(l.title)}</b><small>${esc(l.username)} · ${esc(l.type)} · ${esc(l.city||"")}</small><p>${esc(l.description)}</p></div><button onclick="delListing(${l.id})">İlanı Sil</button></div>`).join("")||"<p class='muted'>İlan yok.</p>";}
+async function delListing(id){if(!confirm("Bu ilan silinsin mi?"))return;await fetch("/api/admin/listings/"+id,{method:"DELETE"});load();}
+load();
+</script>
+</body></html>

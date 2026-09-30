@@ -1,0 +1,771 @@
+
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Müzisyenler Kulübü</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+</head>
+<body>
+<script>window.currentUserId={{ user["id"]|tojson }};</script>
+<button class="nav-btn" onclick="openExplore()">🔎 Keşfet</button>
+<button class="nav-btn" onclick="openEditProfile()">👤 Profilim</button>
+<button class="nav-btn" onclick="openPhotoProfile()">📸 Fotoğraflar</button>
+<button class="nav-btn" onclick="openMusic()">🎵 Müzik Paylaş</button>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-icon">🎸</div><span>Müzisyenler<br>Klubü<small>MÜZİSYENLERİN BULUŞMA NOKTASI</small></span></div>
+    <button class="nav active" data-room="genel"><span class="room-dot"></span>💬 Genel Sohbet</button>
+    <div class="section-title">ODALAR</div>
+    {% for key,name in rooms[1:] %}
+      <button class="nav" data-room="{{ key }}"><span class="room-dot"></span>{{ name }}</button>
+    {% endfor %}
+    <div class="section-title">ARA</div>
+    <button class="nav" id="findBtn">🔎 Müzisyen Ara</button>
+    <button class="nav" id="listingBtn">📣 İlanlar</button>
+    <div class="me">
+      <div class="avatar">{{ user["username"][0]|upper }}</div>
+      <div><b>{{ user["username"] }}</b><small>{{ user["instrument"] or "Enstrüman ekle" }}</small></div>
+      <a href="/logout" title="Çıkış">↪</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="roomTitle">Genel Sohbet</h1>
+        <span id="roomSub">Müzisyenler burada buluşuyor.</span>
+      </div>
+      <div class="top-actions">
+        <button id="profileBtn">👤 Profilim</button>{% if user["role"]=="admin" %}<a class="admin-link" href="/admin">🛡️ Admin Paneli</a>{% endif %}
+        <button id="findTopBtn">🔎 Müzisyen Ara</button><button id="listingTopBtn">📣 İlanlar</button>
+      </div>
+    </header>
+
+    <section class="chat" id="chat"></section>
+
+    <form id="messageForm" class="composer">
+      <input id="messageInput" autocomplete="off" placeholder="Mesajını yaz...">
+      <button>Gönder ➤</button>
+    </form>
+  </main>
+
+  <aside class="rightbar">
+    <h3>🟢 Çevrimiçi</h3>
+    
+<!-- ANA SAYFA KEŞFET ALANI -->
+<section id="homeExploreSection" class="home-explore-section">
+  <div class="home-explore-head">
+    <div>
+      <div class="section-kicker">MÜZİSYENLER KULÜBÜ</div>
+      <h2>🔎 Keşfet</h2>
+      <p>Yeni müzisyenleri bul, profillerine göz at ve mesajlaşmaya başla.</p>
+    </div>
+    <button class="primary-btn" onclick="openExplore()">Tümünü Keşfet →</button>
+  </div>
+  <div id="homeExploreGrid" class="home-explore-grid">
+    <div class="empty-state">🔄 Müzisyenler yükleniyor...</div>
+  </div>
+</section>
+
+<div id="online"></div>
+  </aside>
+</div>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-card">
+    <button class="close" onclick="closeModal()">×</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+const currentUser = {{ user|tojson }};
+const roomNames = {{ dict(rooms)|tojson }};
+let currentRoom = "genel";
+let socket = io();
+let dmTarget = null;
+
+const chat = document.getElementById("chat");
+const input = document.getElementById("messageInput");
+const form = document.getElementById("messageForm");
+
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
+function time(t){try{return new Date(t+"Z").toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})}catch(e){return ""}}
+
+async function loadMessages(room){
+  const res = await fetch("/api/messages/"+encodeURIComponent(room));
+  const msgs = await res.json();
+  chat.innerHTML = "";
+  msgs.forEach(addMessage);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addMessage(m){
+  const mine = Number(m.user_id) === Number(currentUser.id);
+  const div = document.createElement("div");
+  div.className = "msg "+(mine?"mine":"");
+  div.innerHTML = `<div class="avatar sm">${escapeHtml((m.username||"?")[0].toUpperCase())}</div>
+    <div class="bubble"><div class="meta"><b>${escapeHtml(m.username)}</b><span>${time(m.created_at)}</span></div>
+    <div>${escapeHtml(m.text)}</div></div>`;
+  chat.appendChild(div);
+}
+
+function selectRoom(room){
+  currentRoom = room;
+  document.querySelectorAll(".nav[data-room]").forEach(x=>x.classList.toggle("active",x.dataset.room===room));
+  document.getElementById("roomTitle").textContent = roomNames[room] || room;
+  socket.emit("join_room",{room});
+  loadMessages(room);
+}
+
+document.querySelectorAll(".nav[data-room]").forEach(b=>b.addEventListener("click",()=>selectRoom(b.dataset.room)));
+
+socket.on("connect",()=>socket.emit("join_room",{room:currentRoom}));
+socket.on("new_message",m=>{if(m.room===currentRoom){addMessage(m);chat.scrollTop=chat.scrollHeight;}});
+socket.on("online_users", users=>{
+  const el=document.getElementById("online");
+  el.innerHTML = users.length ? users.map(u=>`
+    <div class="online-user" onclick="openDM(${u.id}, '${escapeHtml(u.username)}')">
+      <div class="dot"></div><div><b>${escapeHtml(u.username)}</b><small>${escapeHtml(u.instrument||"Müzisyen")} · ${escapeHtml(u.city||"")}</small></div>
+    </div>`).join("") : '<div class="muted">Şu an kimse yok.</div>';
+});
+socket.on("private_message",m=>{
+  if(dmTarget && Number(dmTarget.id)===Number(m.sender_id)) addDM(m);
+});
+
+form.addEventListener("submit",e=>{
+  e.preventDefault();
+  const text=input.value.trim();
+  if(!text)return;
+  socket.emit("send_message",{room:currentRoom,text});
+  input.value=""; input.focus();
+});
+
+document.getElementById("profileBtn").onclick=showProfile;
+document.getElementById("findBtn").onclick=showSearch;
+document.getElementById("findTopBtn").onclick=showSearch;
+document.getElementById("listingBtn").onclick=showListings;
+document.getElementById("listingTopBtn").onclick=showListings;
+
+function openModal(html){document.getElementById("modalContent").innerHTML=html;document.getElementById("modal").classList.remove("hidden");}
+function closeModal(){document.getElementById("modal").classList.add("hidden");dmTarget=null;}
+
+function showProfile(){
+  openModal(`<h2>👤 Profilim</h2>
+  <form id="profileForm" class="stack">
+    <input name="instrument" placeholder="Enstrüman" value="${escapeHtml(currentUser.instrument||"")}">
+    <input name="genre" placeholder="Müzik türü" value="${escapeHtml(currentUser.genre||"")}">
+    <input name="city" placeholder="Şehir" value="${escapeHtml(currentUser.city||"")}">
+    <textarea name="bio" placeholder="Bio">${escapeHtml(currentUser.bio||"")}</textarea>
+    <button class="primary">Kaydet</button>
+  </form>`);
+  document.getElementById("profileForm").onsubmit=async e=>{
+    e.preventDefault();
+    const r=await fetch("/profile",{method:"POST",body:new FormData(e.target)});
+    if((await r.json()).ok) location.reload();
+  };
+}
+
+
+async function showListings(){
+  openModal(`<div class="listing-head"><div><h2>📣 Müzisyen İlanları</h2><div class="muted">Grup kur, müzisyen bul, projeni paylaş.</div></div>
+  <button class="primary" onclick="showNewListing()">+ İlan Ver</button></div>
+  <div id="listingFilters" class="filters">
+    <input id="listingQuery" placeholder="İlan, enstrüman, tür veya şehir ara..." oninput="renderListings()">
+  </div>
+  <div id="listingResults" class="listing-grid"></div>`);
+  window._listings = await (await fetch("/api/listings")).json();
+  renderListings();
+}
+function renderListings(){
+  const q=(document.getElementById("listingQuery")?.value||"").toLowerCase();
+  const el=document.getElementById("listingResults"); if(!el)return;
+  const rows=(window._listings||[]).filter(x=>
+    [x.title,x.description,x.instrument,x.genre,x.city,x.type,x.username].join(" ").toLowerCase().includes(q)
+  );
+  el.innerHTML=rows.map(x=>`
+    <article class="listing-card">
+      <div class="listing-top"><span class="tag">${escapeHtml(x.type)}</span><small>${time(x.created_at)}</small></div>
+      <h3>${escapeHtml(x.title)}</h3>
+      <p>${escapeHtml(x.description)}</p>
+      <div class="chips">
+        ${x.instrument?`<span>🎸 ${escapeHtml(x.instrument)}</span>`:""}
+        ${x.genre?`<span>🎵 ${escapeHtml(x.genre)}</span>`:""}
+        ${x.city?`<span>📍 ${escapeHtml(x.city)}</span>`:""}
+      </div>
+      <div class="listing-foot"><div class="author"><div class="avatar sm">${escapeHtml((x.username||"?")[0].toUpperCase())}</div><b>${escapeHtml(x.username)}</b></div>
+      ${Number(x.user_id)===Number(currentUser.id)?`<button onclick="removeListing(${x.id})">Sil</button>`:`<button class="primary" onclick="openDM(${x.user_id}, '${escapeHtml(x.username)}')">Mesaj At</button>`}</div>
+    </article>`).join("") || '<div class="muted">Henüz ilan yok. İlk ilanı sen ver!</div>';
+}
+function showNewListing(){
+  openModal(`<h2>📣 İlan Ver</h2>
+    <form id="listingForm" class="stack">
+      <select name="type"><option>Müzisyen Arıyorum</option><option>Grup Arıyorum</option><option>Proje / Beste</option><option>Sahne / Konser</option></select>
+      <input name="title" placeholder="Örn: Rock grubu için gitarist aranıyor" required>
+      <textarea name="description" placeholder="Ne arıyorsun? Projeni anlat..." required></textarea>
+      <input name="instrument" placeholder="Aranan enstrüman">
+      <input name="genre" placeholder="Müzik türü">
+      <input name="city" placeholder="Şehir">
+      <button class="primary">İlanı Yayınla</button>
+    </form>`);
+  document.getElementById("listingForm").onsubmit=async e=>{
+    e.preventDefault();
+    const r=await fetch("/api/listings",{method:"POST",body:new FormData(e.target)});
+    const data=await r.json();
+    if(data.ok) showListings(); else alert(data.error||"İlan oluşturulamadı.");
+  };
+}
+async function removeListing(id){
+  if(!confirm("Bu ilan silinsin mi?"))return;
+  await fetch("/api/listings/"+id,{method:"DELETE"});
+  showListings();
+}
+
+async function showSearch(){
+  openModal(`<h2>🔎 Müzisyen Ara</h2>
+    <input id="searchInput" placeholder="İsim, enstrüman, tür veya şehir..." oninput="runSearch()">
+    <div id="results" class="results"></div>`);
+  runSearch();
+}
+async function runSearch(){
+  const q=document.getElementById("searchInput")?.value||"";
+  const res=await fetch("/api/search?q="+encodeURIComponent(q));
+  const users=await res.json();
+  const el=document.getElementById("results");
+  if(!el)return;
+  el.innerHTML=users.filter(u=>u.id!==currentUser.id).map(u=>`
+    <div class="result">
+      <div class="avatar">${escapeHtml((u.username||"?")[0].toUpperCase())}</div>
+      <div class="grow"><b>${escapeHtml(u.username)}</b><small>${escapeHtml(u.instrument||"")} · ${escapeHtml(u.genre||"")} · ${escapeHtml(u.city||"")}</small><p>${escapeHtml(u.bio||"")}</p></div>
+      <button onclick="openDM(${u.id}, '${escapeHtml(u.username)}')">Mesaj</button>
+    </div>`).join("") || '<div class="muted">Sonuç bulunamadı.</div>';
+}
+
+async function openDM(id,name){
+  dmTarget={id,name};
+  const res=await fetch("/api/dm/"+id);
+  const msgs=await res.json();
+  openModal(`<h2>💌 ${escapeHtml(name)}</h2><div id="dmBox" class="dm-box"></div>
+    <form id="dmForm" class="composer"><input id="dmInput" placeholder="Özel mesaj..."><button>Gönder</button></form>`);
+  msgs.forEach(addDM);
+  document.getElementById("dmForm").onsubmit=e=>{
+    e.preventDefault(); const x=document.getElementById("dmInput"); const t=x.value.trim();
+    if(!t)return; socket.emit("private_message",{receiver_id:id,text:t}); x.value="";
+  };
+}
+function addDM(m){
+  const box=document.getElementById("dmBox"); if(!box)return;
+  const mine=Number(m.sender_id)===Number(currentUser.id);
+  const d=document.createElement("div"); d.className="dm "+(mine?"mine":"");
+  d.innerHTML=`<span>${escapeHtml(m.text)}</span><small>${time(m.created_at)}</small>`;
+  box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
+
+loadMessages(currentRoom);
+</script>
+
+<!-- KEŞFET -->
+<div id="exploreModal" class="modal hidden">
+  <div class="modal-card explore-card">
+    <div class="modal-head">
+      <div>
+        <h2>🔎 Müzisyenleri Keşfet</h2>
+        <p class="muted">Enstrüman, şehir ve türe göre müzisyenleri bul.</p>
+      </div>
+      <button class="close-btn" onclick="closeExplore()">✕</button>
+    </div>
+
+    <div class="explore-filters">
+      <input id="exploreSearch" class="input" placeholder="İsim veya biyografide ara...">
+      <select id="exploreInstrument" class="input">
+        <option value="">Tüm enstrümanlar</option>
+        <option>Gitar</option><option>Bas Gitar</option><option>Davul</option>
+        <option>Perküsyon</option><option>Vokal</option><option>Klavye</option>
+        <option>Piyano</option><option>Keman</option><option>Saksafon</option>
+        <option>Bağlama</option><option>Ud</option><option>Diğer</option>
+      </select>
+      <input id="exploreCity" class="input" placeholder="Şehir">
+      <input id="exploreGenre" class="input" placeholder="Tür / Genre">
+      <button class="primary-btn" onclick="loadExplore()">Ara</button>
+    </div>
+
+    <div id="exploreResults" class="explore-results">
+      <div class="empty-state">🔄 Müzisyenler yükleniyor...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openExplore(){
+  document.getElementById('exploreModal').classList.remove('hidden');
+  loadExplore();
+}
+function closeExplore(){
+  document.getElementById('exploreModal').classList.add('hidden');
+}
+function exploreEsc(v){
+  return String(v ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+  }[c]));
+}
+async function loadExplore(){
+  const q = document.getElementById('exploreSearch').value.trim();
+  const instrument = document.getElementById('exploreInstrument').value;
+  const city = document.getElementById('exploreCity').value.trim();
+  const genre = document.getElementById('exploreGenre').value.trim();
+  const box = document.getElementById('exploreResults');
+
+  box.innerHTML = '<div class="empty-state">🔄 Aranıyor...</div>';
+  try{
+    const params = new URLSearchParams({q, instrument, city, genre});
+    const r = await fetch('/api/explore?' + params.toString());
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Arama başarısız');
+
+    if(!data.users.length){
+      box.innerHTML = '<div class="empty-state">🎸 Bu filtrelere uygun müzisyen bulunamadı.</div>';
+      return;
+    }
+
+    box.innerHTML = data.users.map(u => `
+      <div class="musician-card">
+        <div class="avatar">${exploreEsc((u.username || '?').charAt(0).toUpperCase())}</div>
+        <div class="musician-info">
+          <div class="musician-name">${exploreEsc(u.username)}</div>
+          <div class="tags">
+            ${u.instrument ? `<span>🎸 ${exploreEsc(u.instrument)}</span>` : ''}
+            ${u.genre ? `<span>🎵 ${exploreEsc(u.genre)}</span>` : ''}
+            ${u.city ? `<span>📍 ${exploreEsc(u.city)}</span>` : ''}
+          </div>
+          ${u.bio ? `<div class="bio">${exploreEsc(u.bio)}</div>` : ''}
+        </div>
+        ${typeof startDM === 'function' ? `<button class="secondary-btn" onclick="openProfile(${Number(u.id)})">👤 Profil</button><button class="primary-btn" onclick="startDM(${Number(u.id)})">💬 Mesaj</button>` : `<button class="secondary-btn" onclick="openProfile(${Number(u.id)})">👤 Profil</button>`}
+      </div>
+    `).join('');
+  }catch(e){
+    box.innerHTML = '<div class="empty-state">❌ ' + exploreEsc(e.message) + '</div>';
+  }
+}
+
+['exploreSearch','exploreCity','exploreGenre'].forEach(id => {
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Enter' && document.activeElement?.id === id) loadExplore();
+  });
+});
+</script>
+
+<style>
+.explore-card{max-width:1050px;width:94vw}
+.explore-filters{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr auto;gap:10px;margin:18px 0}
+.explore-results{display:flex;flex-direction:column;gap:10px;max-height:62vh;overflow:auto}
+.musician-card{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid rgba(255,255,255,.08);border-radius:16px;background:rgba(255,255,255,.025)}
+.musician-card .avatar{width:48px;height:48px;min-width:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#7c3aed,#a855f7);font-weight:800;font-size:20px}
+.musician-info{flex:1;min-width:0}
+.musician-name{font-weight:800;font-size:17px;margin-bottom:6px}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tags span{font-size:12px;padding:5px 8px;border-radius:999px;background:rgba(124,58,237,.16);color:#ddd}
+.bio{margin-top:7px;color:#a7a7b5;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:800px){.explore-filters{grid-template-columns:1fr 1fr}.explore-filters .primary-btn{grid-column:1/-1}}
+@media(max-width:560px){.explore-filters{grid-template-columns:1fr}.musician-card{align-items:flex-start}.musician-card .secondary-btn{margin-left:auto}}
+
+.discover-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.profile-hero{min-height:150px;border-radius:18px;background-size:cover;background-position:center;padding:20px;position:relative}
+.profile-hero:before{content:"";position:absolute;inset:0;border-radius:18px;background:rgba(0,0,0,.38)}
+.profile-hero>*{position:relative;z-index:1}
+.profile-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.profile-avatar{overflow:hidden;border:3px solid rgba(255,255,255,.12)}
+</style>
+
+
+<script>
+async function loadHomeExplore(){
+  const grid = document.getElementById('homeExploreGrid');
+  if(!grid) return;
+  try{
+    const r = await fetch('/api/explore?limit=6');
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Yüklenemedi');
+
+    if(!data.users.length){
+      grid.innerHTML = '<div class="empty-state">Henüz keşfedilecek profil yok.</div>';
+      return;
+    }
+
+    grid.innerHTML = data.users.map(u => {
+      const initial = (u.username || '?').charAt(0).toUpperCase();
+      return `
+        <div class="discover-card">
+          <div class="discover-top">
+            <div class="discover-avatar">${u.avatar_url ? `<img src="${u.avatar_url}" alt="">` : exploreEsc(initial)}</div>
+            <div class="discover-online ${u.online ? 'is-online' : ''}">
+              <span></span>${u.online ? 'Çevrimiçi' : 'Profil'}
+            </div>
+          </div>
+          <div class="discover-name">${exploreEsc(u.username)}</div>
+          <div class="discover-tags">
+            ${u.instrument ? `<span>🎸 ${exploreEsc(u.instrument)}</span>` : ''}
+            ${u.genre ? `<span>🎵 ${exploreEsc(u.genre)}</span>` : ''}
+            ${u.city ? `<span>📍 ${exploreEsc(u.city)}</span>` : ''}
+          </div>
+          ${u.bio ? `<p>${exploreEsc(u.bio)}</p>` : '<p class="discover-empty-bio">Biyografi eklenmemiş.</p>'}
+          <div class="discover-actions">
+            <button class="secondary-btn" onclick="openProfile(${Number(u.id)})">👤 Profili Gör</button>
+            ${typeof startDM === 'function' ? `<button class="primary-btn" onclick="startDM(${Number(u.id)})">💬 Mesaj</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }catch(e){
+    grid.innerHTML = '<div class="empty-state">Keşfet bölümü yüklenemedi.</div>';
+  }
+}
+document.addEventListener('DOMContentLoaded', loadHomeExplore);
+</script>
+
+<style>
+.home-explore-section{
+  margin:20px auto;
+  width:min(1180px,94vw);
+  padding:24px;
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:22px;
+  background:linear-gradient(145deg,rgba(124,58,237,.12),rgba(255,255,255,.025));
+}
+.home-explore-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+.home-explore-head h2{margin:3px 0 4px;font-size:25px}
+.home-explore-head p{margin:0;color:#a7a7b5}
+.section-kicker{font-size:11px;letter-spacing:1.8px;color:#a78bfa;font-weight:800}
+.home-explore-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.discover-card{
+  padding:17px;border:1px solid rgba(255,255,255,.08);border-radius:18px;
+  background:rgba(15,15,24,.55);transition:transform .18s,border-color .18s;
+}
+.discover-card:hover{transform:translateY(-3px);border-color:rgba(167,139,250,.35)}
+.discover-top{display:flex;justify-content:space-between;align-items:center}
+.discover-avatar{
+  width:54px;height:54px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,#7c3aed,#a855f7);font-size:22px;font-weight:900;
+}
+.discover-online{font-size:11px;color:#8f8f9d;display:flex;align-items:center;gap:5px}
+.discover-online span{width:7px;height:7px;border-radius:50%;background:#555}
+.discover-online.is-online{color:#86efac}
+.discover-online.is-online span{background:#22c55e}
+.discover-name{font-size:18px;font-weight:850;margin-top:12px}
+.discover-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.discover-tags span{font-size:11px;padding:5px 8px;border-radius:999px;background:rgba(124,58,237,.15);color:#ddd}
+.discover-card p{height:38px;margin:11px 0;color:#aaa;font-size:13px;line-height:19px;overflow:hidden}
+.discover-empty-bio{opacity:.55}
+.discover-actions{display:flex;gap:8px}
+.discover-actions button{flex:1}
+@media(max-width:900px){.home-explore-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){
+  .home-explore-head{align-items:flex-start;flex-direction:column}
+  .home-explore-head .primary-btn{width:100%}
+  .home-explore-grid{grid-template-columns:1fr}
+  .home-explore-section{padding:17px}
+}
+</style>
+
+
+
+<section class="home-explore-section music-feed-section" id="musicFeedV11"><div class="home-explore-head"><div><div class="section-kicker">JAM AKIŞI</div><h2>🎧 Müzik Akışı</h2><p>Paylaşılan kayıtları dinle, beğen ve yorum yap.</p></div><button class="primary-btn" onclick="openMusic()">+ Kayıt Paylaş</button></div><div id="musicFeed"><div class="empty-state">🔄 Kayıtlar yükleniyor...</div></div></section>
+<script>
+function escMusic(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}
+async function loadMusicFeed(){const box=document.getElementById('musicFeed');if(!box)return;try{const d=await (await fetch('/api/tracks')).json();if(!d.tracks.length){box.innerHTML='<div class="empty-state">🎵 Henüz kayıt yok. İlk kaydı sen paylaş!</div>';return}box.innerHTML=d.tracks.map(t=>`<article class="feed-track"><div class="track-cover">♪</div><div class="feed-main"><h3>${escMusic(t.title)}</h3><small>🎤 ${escMusic(t.username)}</small>${t.description?`<p>${escMusic(t.description)}</p>`:''}<audio controls preload="none" src="/static/music/${encodeURIComponent(t.filename)}" onplay="countPlay(${t.id},this)"></audio><div class="feed-actions"><button class="feed-btn ${Number(t.liked)?'liked':''}" id="like-${t.id}" onclick="toggleTrackLike(${t.id})">❤️ <span>${Number(t.likes||0)}</span></button><button class="feed-btn" onclick="showComments(${t.id})">💬 Yorum</button><span class="plays" id="plays-${t.id}">▶ ${Number(t.plays||0)} dinlenme</span></div><div id="comments-${t.id}" class="comments hidden"></div></div></article>`).join('')}catch(e){box.innerHTML='<div class="empty-state">Müzikler yüklenemedi.</div>'}}
+async function countPlay(id,a){if(a.dataset.counted)return;a.dataset.counted='1';const d=await (await fetch('/api/tracks/'+id+'/play',{method:'POST'})).json();const x=document.getElementById('plays-'+id);if(x)x.textContent='▶ '+d.plays+' dinlenme'}
+async function toggleTrackLike(id){const d=await (await fetch('/api/tracks/'+id+'/like',{method:'POST'})).json();const b=document.getElementById('like-'+id);b.classList.toggle('liked',!!d.liked);b.querySelector('span').textContent=d.likes}
+async function showComments(id){const box=document.getElementById('comments-'+id);box.classList.toggle('hidden');if(box.classList.contains('hidden'))return;const d=await (await fetch('/api/tracks/'+id+'/comments')).json();box.innerHTML='<div class="comment-list">'+(d.comments.length?d.comments.map(c=>`<div><b>${escMusic(c.username)}</b> ${escMusic(c.body)}</div>`).join(''):'<span>Henüz yorum yok.</span>')+`</div><div class="comment-form"><input id="comment-${id}" class="input" maxlength="500" placeholder="Yorum yaz..."><button class="primary-btn" onclick="sendTrackComment(${id})">Gönder</button></div>`}
+async function sendTrackComment(id){const i=document.getElementById('comment-'+id);if(!i.value.trim())return;await fetch('/api/tracks/'+id+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:i.value})});i.value='';const box=document.getElementById('comments-'+id);box.classList.add('hidden');await showComments(id)}
+document.addEventListener('DOMContentLoaded',loadMusicFeed);
+</script>
+<style>.music-feed-section{margin-top:20px}.feed-track{display:flex;gap:15px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:18px;background:rgba(15,15,24,.55);margin-bottom:11px}.track-cover{width:70px;height:70px;min-width:70px;border-radius:15px;background:linear-gradient(135deg,#4c1d95,#a855f7);display:flex;align-items:center;justify-content:center;font-size:38px}.feed-main{flex:1;min-width:0}.feed-main h3{margin:0 0 4px}.feed-main small{color:#a78bfa}.feed-main p{color:#aaa;font-size:13px}.feed-main audio{width:100%}.feed-actions{display:flex;gap:8px;align-items:center;margin-top:8px}.feed-btn{border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:#bbb;border-radius:10px;padding:7px 10px;cursor:pointer}.feed-btn.liked{color:#fb7185}.plays{color:#777;font-size:12px;margin-left:auto}.comments{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07)}.comment-list{display:flex;flex-direction:column;gap:7px;color:#ccc;font-size:13px}.comment-list b{color:#c4b5fd}.comment-form{display:flex;gap:8px;margin-top:9px}.comment-form .input{flex:1}@media(max-width:650px){.feed-track{flex-direction:column}.plays{margin-left:0}.comment-form{flex-direction:column}}</style>
+<section class="home-explore-section music-section">
+  <div class="home-explore-head">
+    <div><div class="section-kicker">SES KAYITLARI</div><h2>🎵 Müzikler</h2><p>Kulüpte paylaşılan kayıtları dinle.</p></div>
+    <button class="primary-btn" onclick="openMusic()">+ Müzik Paylaş</button>
+  </div>
+  <div id="myTracks"><div class="empty-state">🔄 Kayıtlar yükleniyor...</div></div>
+</section>
+<script>document.addEventListener('DOMContentLoaded',loadMyTracks);</script>
+
+<!-- PROFİL MODAL -->
+<div id="profileModal" class="modal hidden">
+  <div class="modal-card profile-card">
+    <div class="modal-head">
+      <div><h2>👤 Müzisyen Profili</h2></div>
+      <button class="close-btn" onclick="closeProfile()">✕</button>
+    </div>
+    <div id="profileBody">
+      <div class="empty-state">🔄 Profil yükleniyor...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+function closeProfile(){
+  document.getElementById('profileModal').classList.add('hidden');
+}
+async function openProfile(userId){
+  const modal = document.getElementById('profileModal');
+  const body = document.getElementById('profileBody');
+  modal.classList.remove('hidden');
+  body.innerHTML = '<div class="empty-state">🔄 Profil yükleniyor...</div>';
+  try{
+    const r = await fetch('/api/profile/' + Number(userId));
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Profil bulunamadı');
+    const u = data.user;
+    body.innerHTML = `
+      <div class="profile-hero" style="${u.cover_url ? `background-image:url(${u.cover_url});` : ''}">
+        <div class="profile-avatar">${u.avatar_url ? `<img src="${u.avatar_url}" alt="">` : exploreEsc((u.username || '?').charAt(0).toUpperCase())}</div>
+        <div>
+          <h1>${exploreEsc(u.username)}</h1>
+          <div class="profile-sub">${u.instrument ? '🎸 '+exploreEsc(u.instrument) : ''}${u.city ? ' · 📍 '+exploreEsc(u.city) : ''}</div>
+        </div>
+      </div>
+      <div class="profile-grid">
+        <div class="profile-box"><b>🎸 Enstrüman</b><span>${exploreEsc(u.instrument || 'Belirtilmemiş')}</span></div>
+        <div class="profile-box"><b>🎵 Müzik Türü</b><span>${exploreEsc(u.genre || 'Belirtilmemiş')}</span></div>
+        <div class="profile-box"><b>📍 Şehir</b><span>${exploreEsc(u.city || 'Belirtilmemiş')}</span></div>
+        <div class="profile-box"><b>🛡️ Hesap</b><span>${u.role === 'admin' ? 'Yönetici' : 'Müzisyen'}</span></div>
+      </div>
+      <div class="profile-bio">
+        <h3>Hakkında</h3>
+        <p>${exploreEsc(u.bio || 'Henüz biyografi eklenmemiş.')}</p>
+      </div>
+      <div class="profile-actions">
+        ${typeof startDM === 'function' ? `<button class="primary-btn" onclick="startDM(${Number(u.id)});closeProfile()">💬 Mesaj Gönder</button>` : ''}
+      </div>
+    `;
+  }catch(e){
+    body.innerHTML = '<div class="empty-state">❌ '+exploreEsc(e.message)+'</div>';
+  }
+}
+</script>
+
+<style>
+.profile-card{max-width:760px;width:94vw}
+.profile-hero{display:flex;align-items:center;gap:18px;padding:10px 0 22px}
+.profile-avatar{width:82px;height:82px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#7c3aed,#a855f7);font-size:32px;font-weight:900}
+.profile-hero h1{margin:0 0 6px;font-size:28px}
+.profile-sub{color:#aaa}
+.profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.profile-box{padding:14px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.025)}
+.profile-box b{display:block;font-size:12px;color:#a78bfa;margin-bottom:6px}
+.profile-box span{font-size:14px}
+.profile-bio{margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:14px}
+.profile-bio h3{margin:0 0 8px}
+.profile-bio p{margin:0;color:#bbb;line-height:1.6}
+.profile-actions{margin-top:15px;display:flex;justify-content:flex-end}
+@media(max-width:600px){.profile-grid{grid-template-columns:1fr}.profile-hero h1{font-size:23px}}
+</style>
+
+
+<!-- PROFİL DÜZENLE -->
+<div id="editProfileModal" class="modal hidden">
+  <div class="modal-card edit-profile-card">
+    <div class="modal-head">
+      <div><h2>✏️ Profilimi Düzenle</h2><p class="muted">Müzisyen profilindeki bilgilerini güncelle.</p></div>
+      <button class="close-btn" onclick="closeEditProfile()">✕</button>
+    </div>
+    <div class="edit-profile-grid">
+      <label>Enstrüman<input id="editInstrument" class="input" placeholder="Örn. Elektro Gitar"></label>
+      <label>Müzik Türü<input id="editGenre" class="input" placeholder="Örn. Rock, Blues"></label>
+      <label>Şehir<input id="editCity" class="input" placeholder="Örn. İzmir"></label>
+      <label class="full">Biyografi<textarea id="editBio" class="input" rows="5" maxlength="500" placeholder="Kendinden, müzik geçmişinden veya aradığın gruptan bahset..."></textarea></label>
+    </div>
+    <div id="editProfileStatus" class="edit-status"></div>
+    <div class="profile-actions">
+      <button class="secondary-btn" onclick="closeEditProfile()">Vazgeç</button>
+      <button class="primary-btn" onclick="saveMyProfile()">💾 Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function openEditProfile(){
+  document.getElementById('editProfileModal').classList.remove('hidden');
+  // Profile endpoint is used so the editor always opens with current data.
+  fetch('/api/profile/{{ user["id"] }}').then(r=>r.json()).then(data=>{
+    const u=data.user || {};
+    document.getElementById('editInstrument').value=u.instrument||'';
+    document.getElementById('editGenre').value=u.genre||'';
+    document.getElementById('editCity').value=u.city||'';
+    document.getElementById('editBio').value=u.bio||'';
+  });
+}
+function closeEditProfile(){document.getElementById('editProfileModal').classList.add('hidden');}
+async function saveMyProfile(){
+  const status=document.getElementById('editProfileStatus');
+  status.textContent='🔄 Kaydediliyor...';
+  try{
+    const r=await fetch('/api/me/profile',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        instrument:document.getElementById('editInstrument').value,
+        genre:document.getElementById('editGenre').value,
+        city:document.getElementById('editCity').value,
+        bio:document.getElementById('editBio').value
+      })
+    });
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'Kaydetme başarısız');
+    status.textContent='✅ Profil güncellendi!';
+    setTimeout(()=>{closeEditProfile(); if(typeof loadHomeExplore==='function')loadHomeExplore();},500);
+  }catch(e){status.textContent='❌ '+exploreEsc(e.message);}
+}
+</script>
+
+<style>
+.edit-profile-card{max-width:700px;width:94vw}
+.edit-profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:15px}
+.edit-profile-grid label{font-size:12px;color:#aaa}
+.edit-profile-grid input,.edit-profile-grid textarea{display:block;width:100%;box-sizing:border-box;margin-top:6px}
+.edit-profile-grid .full{grid-column:1/-1}
+.edit-status{min-height:22px;margin-top:12px;font-size:13px;color:#a78bfa}
+@media(max-width:600px){.edit-profile-grid{grid-template-columns:1fr}.edit-profile-grid .full{grid-column:auto}}
+</style>
+
+
+<!-- FOTOĞRAF YÜKLE -->
+<div id="photoProfileModal" class="modal hidden">
+  <div class="modal-card photo-card">
+    <div class="modal-head">
+      <div><h2>📸 Profil Fotoğrafları</h2><p class="muted">Profil fotoğrafını ve kapak görselini değiştir.</p></div>
+      <button class="close-btn" onclick="closePhotoProfile()">✕</button>
+    </div>
+    <form id="photoForm">
+      <label class="upload-label">Profil fotoğrafı
+        <input id="avatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+      </label>
+      <label class="upload-label">Kapak fotoğrafı
+        <input id="coverFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+      </label>
+      <div id="photoPreview" class="photo-preview"></div>
+      <div id="photoStatus" class="edit-status"></div>
+      <div class="profile-actions">
+        <button type="button" class="secondary-btn" onclick="closePhotoProfile()">Vazgeç</button>
+        <button type="submit" class="primary-btn">📤 Yükle</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openPhotoProfile(){
+  document.getElementById('photoProfileModal').classList.remove('hidden');
+}
+function closePhotoProfile(){
+  document.getElementById('photoProfileModal').classList.add('hidden');
+}
+document.getElementById('photoForm')?.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const status=document.getElementById('photoStatus');
+  const fd=new FormData();
+  const a=document.getElementById('avatarFile').files[0];
+  const c=document.getElementById('coverFile').files[0];
+  if(a) fd.append('avatar',a);
+  if(c) fd.append('cover',c);
+  if(!a && !c){status.textContent='⚠️ En az bir fotoğraf seç.';return;}
+  status.textContent='🔄 Yükleniyor...';
+  try{
+    const r=await fetch('/api/me/photos',{method:'POST',body:fd});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'Yükleme başarısız');
+    status.textContent='✅ Fotoğraflar güncellendi!';
+    setTimeout(()=>{closePhotoProfile(); if(typeof loadHomeExplore==='function')loadHomeExplore();},600);
+  }catch(err){status.textContent='❌ '+exploreEsc(err.message);}
+});
+</script>
+
+<style>
+.photo-card{max-width:620px;width:94vw}
+.upload-label{display:block;margin:15px 0;color:#bbb;font-size:13px}
+.upload-label input{display:block;width:100%;margin-top:7px;padding:12px;border:1px dashed rgba(255,255,255,.16);border-radius:12px;background:rgba(255,255,255,.03);color:#ddd}
+.photo-preview{min-height:25px}
+</style>
+
+
+<!-- MÜZİK PAYLAŞ -->
+<div id="musicModal" class="modal hidden">
+  <div class="modal-card music-card">
+    <div class="modal-head">
+      <div><h2>🎵 Müzik Paylaş</h2><p class="muted">Kendi kaydını kulüpte paylaş.</p></div>
+      <button class="close-btn" onclick="closeMusic()">✕</button>
+    </div>
+    <form id="musicForm">
+      <input id="musicTitle" class="input" maxlength="120" placeholder="Parça adı" required>
+      <textarea id="musicDesc" class="input music-desc" maxlength="500" placeholder="Kısa açıklama..."></textarea>
+      <label class="audio-upload">🎧 Ses dosyası seç
+        <input id="musicFile" type="file" accept=".mp3,.wav,.m4a,.ogg,.webm" required>
+      </label>
+      <div id="musicStatus" class="edit-status"></div>
+      <div class="profile-actions">
+        <button type="button" class="secondary-btn" onclick="closeMusic()">Vazgeç</button>
+        <button class="primary-btn" type="submit">🚀 Paylaş</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openMusic(){document.getElementById('musicModal').classList.remove('hidden')}
+function closeMusic(){document.getElementById('musicModal').classList.add('hidden')}
+document.getElementById('musicForm')?.addEventListener('submit', async e=>{
+  e.preventDefault();
+  const status=document.getElementById('musicStatus');
+  const f=document.getElementById('musicFile').files[0];
+  if(!f){status.textContent='⚠️ Bir ses dosyası seç.';return}
+  const fd=new FormData();
+  fd.append('title',document.getElementById('musicTitle').value);
+  fd.append('description',document.getElementById('musicDesc').value);
+  fd.append('audio',f);
+  status.textContent='🔄 Yükleniyor...';
+  try{
+    const r=await fetch('/api/tracks',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'Yükleme başarısız');
+    status.textContent='✅ Parça paylaşıldı!';
+    setTimeout(()=>{closeMusic();loadMyTracks?.()},700);
+  }catch(err){status.textContent='❌ '+exploreEsc(err.message)}
+});
+
+async function loadMyTracks(){
+  const box=document.getElementById('myTracks');
+  if(!box) return;
+  try{
+    const r=await fetch('/api/tracks');
+    const d=await r.json();
+    box.innerHTML=d.tracks.length ? d.tracks.map(t=>`
+      <div class="track-item">
+        <div class="track-meta"><b>🎵 ${exploreEsc(t.title)}</b><small>${exploreEsc(t.username)} · ${exploreEsc(t.description||'')}</small></div>
+        <audio controls preload="none" src="${exploreEsc('/static/music/'+t.filename)}"></audio>
+        ${Number(t.user_id)===Number(window.currentUserId||-1)?`<button class="danger-btn" onclick="deleteTrack(${Number(t.id)})">Sil</button>`:''}
+      </div>`).join('') : '<div class="empty-state">Henüz müzik paylaşılmamış.</div>';
+  }catch(e){box.innerHTML='<div class="empty-state">Müzikler yüklenemedi.</div>'}
+}
+async function deleteTrack(id){
+  if(!confirm('Bu parçayı silmek istediğine emin misin?')) return;
+  await fetch('/api/tracks/'+Number(id),{method:'DELETE'});
+  loadMyTracks();
+}
+</script>
+
+<style>
+.music-card{max-width:650px;width:94vw}
+.music-desc{margin-top:10px;min-height:90px}
+.audio-upload{display:block;margin-top:12px;padding:18px;border:1px dashed rgba(255,255,255,.15);border-radius:14px;color:#bbb;cursor:pointer}
+.audio-upload input{display:block;margin-top:8px;width:100%}
+.track-item{display:flex;align-items:center;gap:12px;padding:13px;border:1px solid rgba(255,255,255,.08);border-radius:14px;margin-bottom:9px}
+.track-meta{flex:1;min-width:0}.track-meta b,.track-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.track-meta small{color:#999;margin-top:4px}
+.track-item audio{max-width:280px}
+.danger-btn{border:0;border-radius:9px;padding:7px 10px;background:rgba(239,68,68,.15);color:#fca5a5;cursor:pointer}
+@media(max-width:650px){.track-item{align-items:flex-start;flex-direction:column}.track-item audio{width:100%;max-width:none}.track-item .danger-btn{align-self:flex-end}}
+</style>
+
+</body>
+</html>

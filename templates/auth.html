@@ -1,0 +1,37 @@
+
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Müzisyenler Kulübü</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth">
+<div class="auth-card">
+  <div class="logo">🎸 Müzisyenler Kulübü</div>
+  <div class="muted">Müzisyenlerin buluşma noktası</div>
+  <h2>{{ "Giriş Yap" if mode=="login" else "Kayıt Ol" }}</h2>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post">
+    {% if mode=="register" %}
+      <input name="username" placeholder="Kullanıcı adı" required>
+      <input name="email" type="email" placeholder="E-posta" required>
+      <input name="instrument" placeholder="Enstrüman (örn. Gitar)">
+      <input name="genre" placeholder="Müzik türü (örn. Rock)">
+      <input name="city" placeholder="Şehir">
+      <textarea name="bio" placeholder="Kendinden biraz bahset"></textarea>
+      <input name="password" type="password" placeholder="Şifre (en az 6 karakter)" required>
+    {% else %}
+      <input name="identifier" placeholder="Kullanıcı adı veya e-posta" required>
+      <input name="password" type="password" placeholder="Şifre" required>
+    {% endif %}
+    <button class="primary" type="submit">{{ "Kayıt Ol" if mode=="register" else "Giriş Yap" }}</button>
+  </form>
+  {% if mode=="login" %}
+    <p>Hesabın yok mu? <a href="/register">Kayıt ol</a></p>
+  {% else %}
+    <p>Zaten hesabın var mı? <a href="/login">Giriş yap</a></p>
+  {% endif %}
+</div>
+</body>
+</html>
