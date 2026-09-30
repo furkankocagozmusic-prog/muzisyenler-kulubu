@@ -502,7 +502,7 @@ def handle_private(data):
 if __name__ == "__main__":
     init_db()
     print("Müzisyenler Kulübü çalışıyor: http://127.0.0.1:5000")
-    socketio.run(app, host="127.0.0.1", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False, allow_unsafe_werkzeug=True)
 
 
 @app.get("/api/explore")
@@ -738,4 +738,4 @@ if __name__ == "__main__":
     init_db()
     ensure_track_engagement_tables()
     print("Müzisyenler Kulübü çalışıyor: http://127.0.0.1:5000")
-    socketio.run(app, host="127.0.0.1", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False, allow_unsafe_werkzeug=True)
